@@ -1,0 +1,233 @@
+import { Anthropic } from "@anthropic-ai/sdk"
+import OpenAI from "openai"
+import { ApiHandler } from "."
+import { ApiHandlerOptions } from "../shared/api"
+
+export class OpenAIHandler implements ApiHandler {
+	private options: ApiHandlerOptions
+	private client: OpenAI
+
+	constructor(options: ApiHandlerOptions) {
+		this.options = options
+		this.client = new OpenAI({
+			apiKey: this.options.apiKey,
+		})
+	}
+
+	async createMessage(
+		systemPrompt: string,
+		messages: Anthropic.Messages.MessageParam[],
+		tools: Anthropic.Messages.Tool[]
+	): Promise<Anthropic.Messages.Message> {
+		// Convert Anthropic messages to OpenAI format
+		const openAiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+			{ role: "system", content: systemPrompt },
+			...this.convertToOpenAiMessages(messages),
+		]
+
+		// Convert Anthropic tools to OpenAI tools
+		const openAiTools: OpenAI.Chat.ChatCompletionTool[] = tools.map((tool) => ({
+			type: "function",
+			function: {
+				name: tool.name,
+				description: tool.description,
+				parameters: tool.input_schema,
+			},
+		}))
+
+		const completion = await this.client.chat.completions.create({
+			model: "gpt-4o-2024-08-06",
+			max_tokens: 16384,
+			messages: openAiMessages,
+			tools: openAiTools,
+			tool_choice: "auto",
+		})
+
+		// Convert OpenAI response to Anthropic format
+		const openAiMessage = completion.choices[0].message
+		const anthropicMessage: Anthropic.Messages.Message = {
+			id: completion.id,
+			type: "message",
+			role: openAiMessage.role,
+			content: [
+				{
+					type: "text",
+					text: openAiMessage.content || "",
+				},
+			],
+			model: completion.model,
+			stop_reason: this.mapFinishReason(completion.choices[0].finish_reason),
+			stop_sequence: null,
+			usage: {
+				input_tokens: completion.usage?.prompt_tokens || 0,
+				output_tokens: completion.usage?.completion_tokens || 0,
+			},
+		}
+
+		if (openAiMessage.tool_calls && openAiMessage.tool_calls.length > 0) {
+			anthropicMessage.content.push(
+				...openAiMessage.tool_calls.map((toolCall): Anthropic.ToolUseBlock => {
+					let parsedInput = {}
+					try {
+						parsedInput = JSON.parse(toolCall.function.arguments || "{}")
+					} catch (error) {
+						console.error("Failed to parse tool arguments:", error)
+					}
+					return {
+						type: "tool_use",
+						id: toolCall.id,
+						name: toolCall.function.name,
+						input: parsedInput,
+					}
+				})
+			)
+		}
+
+		return anthropicMessage
+	}
+
+	private mapFinishReason(
+		finishReason: OpenAI.Chat.ChatCompletion.Choice["finish_reason"]
+	): Anthropic.Messages.Message["stop_reason"] {
+		switch (finishReason) {
+			case "stop":
+				return "end_turn"
+			case "length":
+				return "max_tokens"
+			case "tool_calls":
+				return "tool_use"
+			case "content_filter":
+				return null // Anthropic doesn't have an exact equivalent
+			default:
+				return null
+		}
+	}
+
+	convertToOpenAiMessages(
+		anthropicMessages: Anthropic.Messages.MessageParam[]
+	): OpenAI.Chat.ChatCompletionMessageParam[] {
+		const openAiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = []
+
+		for (const anthropicMessage of anthropicMessages) {
+			if (typeof anthropicMessage.content === "string") {
+				openAiMessages.push({ role: anthropicMessage.role, content: anthropicMessage.content })
+			} else {
+				if (anthropicMessage.role === "user") {
+					const { nonToolMessages, toolMessages } = anthropicMessage.content.reduce<{
+						nonToolMessages: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam)[]
+						toolMessages: Anthropic.ToolResultBlockParam[]
+					}>(
+						(acc, part) => {
+							if (part.type === "tool_result") {
+								acc.toolMessages.push(part)
+							} else if (part.type === "text" || part.type === "image") {
+								acc.nonToolMessages.push(part)
+							}
+							return acc
+						},
+						{ nonToolMessages: [], toolMessages: [] }
+					)
+
+					// Process non-tool messages
+					if (nonToolMessages.length > 0) {
+						openAiMessages.push({
+							role: "user",
+							content: nonToolMessages.map((part) => {
+								if (part.type === "image") {
+									return { type: "image_url", image_url: { url: part.source.data } }
+								}
+								return { type: "text", text: part.text }
+							}),
+						})
+					}
+
+					// Process tool result messages
+					toolMessages.forEach((toolMessage) => {
+						let content: string
+						if (typeof toolMessage.content === "string") {
+							content = toolMessage.content
+						} else {
+							content =
+								toolMessage.content
+									?.map((part) => {
+										if (part.type === "image") {
+											return `{ type: "image_url", image_url: { url: ${part.source.data} } }`
+										}
+										return part.text
+									})
+									.join("\n") ?? ""
+						}
+						openAiMessages.push({
+							role: "tool",
+							tool_call_id: toolMessage.tool_use_id,
+							content: content,
+						})
+					})
+				} else if (anthropicMessage.role === "assistant") {
+					const { nonToolMessages, toolMessages } = anthropicMessage.content.reduce<{
+						nonToolMessages: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam)[]
+						toolMessages: Anthropic.ToolUseBlockParam[]
+					}>(
+						(acc, part) => {
+							if (part.type === "tool_use") {
+								acc.toolMessages.push(part)
+							} else if (part.type === "text" || part.type === "image") {
+								acc.nonToolMessages.push(part)
+							}
+							return acc
+						},
+						{ nonToolMessages: [], toolMessages: [] }
+					)
+
+					// Process non-tool messages
+					let content: string | undefined
+					if (nonToolMessages.length > 0) {
+						content = nonToolMessages
+							.map((part) => {
+								if (part.type === "image") {
+									return `{ type: "image_url", image_url: { url: ${part.source.data} } }`
+								}
+								return part.text
+							})
+							.join("\n")
+					}
+
+					// Process tool use messages
+					let tool_calls: OpenAI.Chat.ChatCompletionMessageToolCall[] = toolMessages.map((toolMessage) => ({
+						id: toolMessage.id,
+						type: "function",
+						function: {
+							name: toolMessage.name,
+							arguments: JSON.stringify(toolMessage.input),
+						},
+					}))
+
+					openAiMessages.push({
+						role: "assistant",
+						content,
+						tool_calls,
+					})
+				}
+			}
+		}
+
+		return openAiMessages
+	}
+
+	createUserReadableRequest(
+		userContent: Array<
+			| Anthropic.TextBlockParam
+			| Anthropic.ImageBlockParam
+			| Anthropic.ToolUseBlockParam
+			| Anthropic.ToolResultBlockParam
+		>
+	): any {
+		return {
+			model: "gpt-4o-2024-08-06",
+			max_tokens: 16384,
+			messages: [{ conversation_history: "..." }, { role: "user", content: userContent }],
+			tools: "(see tools in src/ClaudeDev.ts)",
+			tool_choice: "auto",
+		}
+	}
+}

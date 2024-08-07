@@ -25,6 +25,7 @@ const ApiOptions: React.FC<ApiOptionsProps> = ({ apiConfiguration, setApiConfigu
 					<VSCodeOption value="anthropic">Anthropic</VSCodeOption>
 					<VSCodeOption value="openrouter">OpenRouter</VSCodeOption>
 					<VSCodeOption value="bedrock">AWS Bedrock</VSCodeOption>
+					<VSCodeOption value="openai">OpenAi</VSCodeOption>
 				</VSCodeDropdown>
 			</div>
 
@@ -134,6 +135,29 @@ const ApiOptions: React.FC<ApiOptionsProps> = ({ apiConfiguration, setApiConfigu
 							href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html"
 							style={{ display: "inline" }}>
 							You can find your AWS access key and secret key here.
+						</VSCodeLink>
+					</p>
+				</div>
+			)}
+
+			{apiConfiguration?.apiProvider === "openai" && (
+				<div>
+					<VSCodeTextField
+						value={apiConfiguration?.apiKey || ""}
+						style={{ width: "100%" }}
+						onInput={handleInputChange("apiKey")}
+						placeholder="Enter API Key...">
+						<span style={{ fontWeight: 500 }}>OpenAi API Key</span>
+					</VSCodeTextField>
+					<p
+						style={{
+							fontSize: "12px",
+							marginTop: "5px",
+							color: "var(--vscode-descriptionForeground)",
+						}}>
+						This key is stored locally and only used to make API requests from this extension.
+						<VSCodeLink href="https://platform.openai.com/" style={{ display: "inline" }}>
+							You can get an OpenAi API key by signing up here.
 						</VSCodeLink>
 					</p>
 				</div>

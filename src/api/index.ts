@@ -3,6 +3,7 @@ import { ApiConfiguration } from "../shared/api"
 import { AnthropicHandler } from "./anthropic"
 import { AwsBedrockHandler } from "./bedrock"
 import { OpenRouterHandler } from "./openrouter"
+import { OpenAIHandler } from "./openai"
 
 export interface ApiHandler {
 	createMessage(
@@ -30,6 +31,8 @@ export function buildApiHandler(configuration: ApiConfiguration): ApiHandler {
 			return new OpenRouterHandler(options)
 		case "bedrock":
 			return new AwsBedrockHandler(options)
+		case "openai":
+			return new OpenAIHandler(options)
 		default:
 			return new AnthropicHandler(options)
 	}

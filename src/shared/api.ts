@@ -1,7 +1,7 @@
-export type ApiProvider = "anthropic" | "openrouter" | "bedrock"
+export type ApiProvider = "anthropic" | "openrouter" | "bedrock" | "openai"
 
 export interface ApiHandlerOptions {
-	apiKey?: string // anthropic
+	apiKey?: string // anthropic or openai
 	openRouterApiKey?: string
 	awsAccessKey?: string
 	awsSecretKey?: string
